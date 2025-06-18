@@ -122,13 +122,20 @@ extern "C" {
         const enum llama_pooling_type pooling_type = llama_pooling_type(ctx);
         model_t model = (model_t)llama_get_model(ctx);
         const uint64_t n_batch = llama_n_batch(ctx);
+        const uint64_t n_ctx = llama_n_ctx(ctx);
 
         // Tokenize the input text
         auto inp = common_tokenize(ctx, text, true, true);
         *out_tokens = inp.size();
+        
+        
         if (inp.size() > n_batch) {
-            printf("Number of tokens exceeds batch size, increase batch size\n");
             return 1; // Number of tokens exceeds batch size
+        }
+
+        // CRITICAL: Check if tokens exceed context size (model's positional embedding limit)
+        if (inp.size() > n_ctx) {
+            return 4; // Number of tokens exceeds context size
         }
 
         // Check if the last token is SEP
@@ -152,3 +159,4 @@ extern "C" {
         return 0;
     }
 }
+
