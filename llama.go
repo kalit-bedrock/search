@@ -58,6 +58,60 @@ func (m *Vectorizer) EmbedText(text string) ([]float32, error) {
 	return ctx.EmbedText(text)
 }
 
+// EmbedLongText embeds text by truncating it to fit within the token limit.
+func (m *Vectorizer) EmbedLongText(text string, maxTokens int) ([]float32, error) {
+	if maxTokens <= 0 {
+		maxTokens = 500 // Safe default, leaving room for special tokens
+	}
+
+	truncated, err := m.truncateText(text, maxTokens)
+	if err != nil {
+		return nil, fmt.Errorf("failed to truncate text: %w", err)
+	}
+
+	return m.EmbedText(truncated)
+}
+
+// truncateText truncates text to fit within the specified token limit.
+func (m *Vectorizer) truncateText(text string, maxTokens int) (string, error) {
+	// Use binary search to find the maximum text length that fits in maxTokens
+	ctx := m.Context(512)
+	defer ctx.Close()
+
+	// First check if the full text fits
+	tokens, err := ctx.countTokens(text)
+	if err != nil {
+		return "", err
+	}
+
+	if tokens <= maxTokens {
+		return text, nil
+	}
+
+	// Binary search for the right cutoff point
+	left, right := 0, len(text)
+	result := ""
+
+	for left < right {
+		mid := (left + right + 1) / 2
+		candidate := text[:mid]
+
+		tokens, err := ctx.countTokens(candidate)
+		if err != nil {
+			return "", err
+		}
+
+		if tokens <= maxTokens {
+			result = candidate
+			left = mid
+		} else {
+			right = mid - 1
+		}
+	}
+
+	return result, nil
+}
+
 // --------------------------------- Context ---------------------------------
 
 // Context represents a context for embedding text using the model.
@@ -101,8 +155,36 @@ func (ctx *Context) EmbedText(text string) ([]float32, error) {
 		return nil, fmt.Errorf("last token in the prompt is not SEP")
 	case 3:
 		return nil, fmt.Errorf("failed to decode/encode text")
+	case 4:
+		return nil, fmt.Errorf("number of tokens (%d) exceeds model's context limit", tok)
 	default:
 		return nil, fmt.Errorf("failed to embed text (code=%d)", ret)
+	}
+}
+
+// countTokens returns the number of tokens in the given text without embedding.
+func (ctx *Context) countTokens(text string) (int, error) {
+	switch {
+	case ctx.handle == 0 || ctx.parent.handle == 0:
+		return 0, fmt.Errorf("context is not initialized")
+	}
+
+	// Use embed_text but ignore the embeddings output
+	out := make([]float32, ctx.parent.n_embd)
+	tok := uint32(0)
+	ret := embed_text(ctx.handle, text, out, &tok)
+
+	// For token counting, we only care about successful tokenization
+	// or exceeding limits (which still gives us the token count)
+	switch ret {
+	case 0, 1, 4: // Success, exceeds batch, or exceeds context
+		return int(tok), nil
+	case 2:
+		return 0, fmt.Errorf("last token in the prompt is not SEP")
+	case 3:
+		return 0, fmt.Errorf("failed to decode/encode text")
+	default:
+		return 0, fmt.Errorf("failed to count tokens (code=%d)", ret)
 	}
 }
 
@@ -148,3 +230,4 @@ func (p *pool[T]) Close() {
 		x.Close()
 	}
 }
+
